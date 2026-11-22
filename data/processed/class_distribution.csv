@@ -1,0 +1,11 @@
+dataset,split,label,count
+CIFAKE,test,fake,10000
+CIFAKE,test,real,10000
+CIFAKE,train,fake,50000
+CIFAKE,train,real,50000
+Faces,test,fake,10000
+Faces,test,real,10000
+Faces,train,fake,50000
+Faces,train,real,50000
+Faces,valid,fake,10000
+Faces,valid,real,10000

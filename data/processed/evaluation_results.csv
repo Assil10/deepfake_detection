@@ -1,0 +1,7 @@
+model,tested_on,AUC,Accuracy,Recall (fake),False positive rate,TP,FP,TN,FN
+model_cifake,cifake,0.9830979999999999,0.936,0.937,0.065,937,65,935,63
+model_cifake,faces,0.45987999999999996,0.4865,0.902,0.929,902,929,71,98
+model_faces,cifake,0.492996,0.5005,0.071,0.07,71,70,930,929
+model_faces,faces,0.8798895,0.7925,0.785,0.2,785,200,800,215
+model_combined,cifake,0.9918965000000002,0.9565,0.962,0.049,962,49,951,38
+model_combined,faces,0.9721369999999999,0.905,0.904,0.094,904,94,906,96

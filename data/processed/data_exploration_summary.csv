@@ -1,0 +1,3 @@
+dataset,total_images,splits,train_fake,train_real,test_fake,test_real,resolution,mean_size_kb_fake,mean_size_kb_real
+CIFAKE,120000,"test, train",50000,50000,10000,10000,32x32,0.9,0.9
+Faces,140000,"test, train, valid",50000,50000,10000,10000,256x256,27.7,28.1

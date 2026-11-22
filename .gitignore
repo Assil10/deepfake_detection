@@ -1,0 +1,20 @@
+# Datasets (download separately; see README)
+data/raw/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Jupyter / tooling
+.ipynb_checkpoints/
+.virtual_documents/
+notebooks/Untitled.ipynb
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
