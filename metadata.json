@@ -1,0 +1,8 @@
+{
+  "name": "Veritas — Deepfake & AI Image Detector",
+  "description": "Upload any photo to inspect whether it is AI-generated or an authentic photograph, paired with cross-dataset EfficientNet-B0 and V2-S benchmark metrics from the deepfake_detection repository.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
