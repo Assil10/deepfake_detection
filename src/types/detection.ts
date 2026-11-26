@@ -1,5 +1,15 @@
 import type { ComputedImageSignals } from '../utils/imageForensics';
 
+export type DetectionEngine = 'pytorch' | 'gemini';
+
+export interface ModelCheckpointInfo {
+  name: string;
+  label: string;
+  note: string;
+  sizeBytes: number;
+  recommended: boolean;
+}
+
 export interface ForensicIndicator {
   category: string;
   observation: string;
@@ -17,6 +27,9 @@ export interface DetectionResult {
   indicators: ForensicIndicator[];
   analyzedAt: string;
   engine: string;
+  engineMode: DetectionEngine;
+  modelName?: string;
+  latencyMs?: number;
 }
 
 export interface HistoryEntry {

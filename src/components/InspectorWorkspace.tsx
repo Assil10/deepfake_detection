@@ -19,7 +19,12 @@ import {
   Upload,
 } from 'lucide-react';
 import { SAMPLE_IMAGES } from '../data/repoMetrics';
-import type { DetectionResult, HistoryEntry } from '../types/detection';
+import type {
+  DetectionEngine,
+  DetectionResult,
+  HistoryEntry,
+  ModelCheckpointInfo,
+} from '../types/detection';
 import { analyzeImagePixels, type ComputedImageSignals } from '../utils/imageForensics';
 
 type ViewMode = 'original' | 'tensor128' | 'edges';
@@ -65,6 +70,31 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
   const [signals, setSignals] = useState<ComputedImageSignals | null>(null);
   const [result, setResult] = useState<DetectionResult | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('original');
+  const [engine, setEngine] = useState<DetectionEngine>('pytorch');
+  const [models, setModels] = useState<ModelCheckpointInfo[]>([
+    {
+      name: 'model_combined.pth',
+      label: 'Combined EfficientNet-B0',
+      note: 'CIFAKE + Faces · 0.992 / 0.972 AUC',
+      sizeBytes: 0,
+      recommended: true,
+    },
+    {
+      name: 'model_cifake.pth',
+      label: 'CIFAKE EfficientNet-B0',
+      note: 'Objects only · 0.983 CIFAKE / 0.460 Faces AUC',
+      sizeBytes: 0,
+      recommended: false,
+    },
+    {
+      name: 'model_faces.pth',
+      label: 'Faces EfficientNet-B0',
+      note: 'Portraits only · 0.493 CIFAKE / 0.880 Faces AUC',
+      sizeBytes: 0,
+      recommended: false,
+    },
+  ]);
+  const [selectedModel, setSelectedModel] = useState<string>('model_combined.pth');
   const [isDragging, setIsDragging] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -79,6 +109,29 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
   });
 
   const activeRequestRef = useRef<number>(0);
+  const sessionImageCacheRef = useRef<Map<string, { previewUrl: string; uploadBase64: string }>>(
+    new Map()
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/models')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { models?: ModelCheckpointInfo[] } | null) => {
+        if (!cancelled && data?.models && data.models.length > 0) {
+          setModels(data.models);
+          setSelectedModel((prev) =>
+            data.models!.some((m) => m.name === prev) ? prev : data.models![0].name
+          );
+        }
+      })
+      .catch(() => {
+        // Keep default checkpoint list if endpoint unreachable
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -92,7 +145,9 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
     async (
       computedSignals: ComputedImageSignals,
       imgPreviewUrl: string,
-      saveToHistory = true
+      saveToHistory = true,
+      targetEngine: DetectionEngine = engine,
+      targetModel: string = selectedModel
     ) => {
       const requestId = ++activeRequestRef.current;
       setIsAnalyzing(true);
@@ -107,6 +162,8 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
             imageBase64: computedSignals.uploadBase64,
             mimeType: computedSignals.uploadMimeType,
             fileName: computedSignals.fileName,
+            engine: targetEngine,
+            modelName: targetModel,
           }),
         });
 
@@ -124,8 +181,13 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
           const thumb = await createSmallThumbnail(imgPreviewUrl);
           if (requestId !== activeRequestRef.current) return;
           const { uploadBase64: _ignored, ...lightSignals } = computedSignals;
+          const entryId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          sessionImageCacheRef.current.set(entryId, {
+            previewUrl: imgPreviewUrl,
+            uploadBase64: computedSignals.uploadBase64,
+          });
           const entry: HistoryEntry = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            id: entryId,
             fileName: computedSignals.fileName,
             thumbnailDataUrl: thumb,
             verdict: payload.verdict,
@@ -151,7 +213,7 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
         }
       }
     },
-    []
+    [engine, selectedModel]
   );
 
   const handleImageInput = useCallback(
@@ -229,10 +291,37 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
     activeRequestRef.current++;
     setIsAnalyzing(false);
     setErrorMsg(null);
-    setPreviewUrl(entry.previewUrl);
-    setSignals({ ...entry.signals, uploadBase64: '' });
+    const cached = sessionImageCacheRef.current.get(entry.id);
+    const restoredPreview = cached?.previewUrl || entry.previewUrl;
+    const restoredBase64 =
+      cached?.uploadBase64 ||
+      (entry.previewUrl.includes(',') ? entry.previewUrl.split(',')[1] || '' : '');
+    setPreviewUrl(restoredPreview);
+    setSignals({ ...entry.signals, uploadBase64: restoredBase64 });
     setResult(entry.result);
+    if (entry.result.engineMode) {
+      setEngine(entry.result.engineMode);
+    }
+    if (entry.result.modelName) {
+      setSelectedModel(entry.result.modelName);
+    }
     setViewMode('original');
+  };
+
+  const handleEngineSwitch = (nextEngine: DetectionEngine) => {
+    if (nextEngine === engine) return;
+    setEngine(nextEngine);
+    if (signals?.uploadBase64 && previewUrl) {
+      void runServerDetection(signals, previewUrl, false, nextEngine, selectedModel);
+    }
+  };
+
+  const handleModelChange = (nextModel: string) => {
+    if (nextModel === selectedModel) return;
+    setSelectedModel(nextModel);
+    if (engine === 'pytorch' && signals?.uploadBase64 && previewUrl) {
+      void runServerDetection(signals, previewUrl, false, 'pytorch', nextModel);
+    }
   };
 
   const activeImageSrc =
@@ -241,6 +330,8 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
       : viewMode === 'edges' && signals
         ? signals.edgeMapDataUrl
         : previewUrl;
+
+  const activeModelMeta = models.find((m) => m.name === selectedModel) || models[0];
 
   return (
     <section id="detector" className="mx-auto max-w-[1360px] px-6 py-8 md:py-10 space-y-8">
@@ -254,14 +345,19 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
             Detect AI-Generated & Deepfake Photos
           </h1>
           <p className="text-sm leading-relaxed text-slate-600">
-            Upload, drop, or paste any photograph to evaluate synthetic generation artifacts,
-            inspect the <code className="font-mono text-xs text-slate-800">128×128</code> model
-            tensor input and Sobel edge residuals, and review probabilistic class confidence.
+            Upload, drop, or paste any photograph to evaluate it with your{' '}
+            <code className="font-mono text-xs text-slate-800">models/*.pth</code> PyTorch
+            EfficientNet-B0 checkpoints or switch to Gemini Vision forensics.
           </p>
         </div>
 
         <div className="text-xs text-slate-500 font-mono shrink-0">
-          <span>EfficientNet-B0 pipeline · Live Gemini Vision Forensics</span>
+          <span>
+            Active Engine:{' '}
+            {engine === 'pytorch'
+              ? `${selectedModel} (EfficientNet-B0)`
+              : 'Gemini Vision (gemini-4-hydrogen)'}
+          </span>
         </div>
       </div>
 
@@ -487,8 +583,79 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
 
         {/* Right Diagnostic Verdict Panel (5 cols) */}
         <div className="lg:col-span-5 flex flex-col rounded-xl border border-slate-200 bg-white p-6 justify-between space-y-6">
+          {/* Evaluation Engine Switch & Checkpoint Selector */}
+          <div className="space-y-3 border-b border-slate-200 pb-5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Evaluation Engine
+              </span>
+              <span className="text-[11px] font-mono text-slate-500">
+                {engine === 'pytorch' ? 'Local .pth Weights' : 'Multimodal Vision'}
+              </span>
+            </div>
+
+            <div
+              role="radiogroup"
+              aria-label="Evaluation engine"
+              className="grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1"
+            >
+              <button
+                type="button"
+                role="radio"
+                aria-checked={engine === 'pytorch'}
+                onClick={() => handleEngineSwitch('pytorch')}
+                className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  engine === 'pytorch'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                PyTorch Model (.pth)
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={engine === 'gemini'}
+                onClick={() => handleEngineSwitch('gemini')}
+                className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  engine === 'gemini'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Gemini Vision
+              </button>
+            </div>
+
+            {engine === 'pytorch' && (
+              <div className="space-y-1.5 pt-1">
+                <label
+                  htmlFor="checkpoint-select"
+                  className="block text-xs font-medium text-slate-600"
+                >
+                  Checkpoint Weights (<code className="font-mono">models/</code>)
+                </label>
+                <select
+                  id="checkpoint-select"
+                  value={selectedModel}
+                  onChange={(e) => handleModelChange(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-mono text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none cursor-pointer"
+                >
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name}>
+                      {m.name} — {m.label}
+                    </option>
+                  ))}
+                </select>
+                {activeModelMeta && (
+                  <p className="text-[11px] text-slate-500 font-mono">{activeModelMeta.note}</p>
+                )}
+              </div>
+            )}
+          </div>
+
           {!previewUrl && !isAnalyzing && (
-            <div className="flex-1 flex flex-col justify-center space-y-5 py-6">
+            <div className="flex-1 flex flex-col justify-center space-y-5 py-4">
               <div className="space-y-2">
                 <h2 className="font-display text-lg font-bold text-slate-900">
                   Authenticity Verdict
@@ -509,8 +676,10 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
                   <span className="font-mono text-slate-800">128×128 RGB · ImageNet Norm</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500">Runtime Engine</span>
-                  <span className="font-mono text-slate-800">Gemini Vision Forensics</span>
+                  <span className="text-slate-500">Selected Engine</span>
+                  <span className="font-mono text-slate-800">
+                    {engine === 'pytorch' ? `models/${selectedModel}` : 'gemini-4-hydrogen'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -649,10 +818,12 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
                 </div>
               </div>
 
-              {/* Observed Visual Forensics */}
+              {/* Observed Indicators / Model Telemetry */}
               <div className="space-y-3 border-t border-slate-200 pt-5">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Observed Visual Indicators
+                  {result.engineMode === 'pytorch'
+                    ? 'PyTorch Model Telemetry'
+                    : 'Observed Visual Indicators'}
                 </h3>
                 <ul className="divide-y divide-slate-100">
                   {result.indicators.map((ind, idx) => (
@@ -672,7 +843,7 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
                             ? 'Synthetic cue'
                             : ind.signal === 'authentic'
                               ? 'Authentic cue'
-                              : 'Neutral'}
+                              : 'Pipeline info'}
                         </span>
                       </div>
                       <p className="mt-1 text-xs leading-relaxed text-slate-600">
@@ -685,11 +856,22 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
             </div>
           )}
 
-          {/* Subtle Model Note */}
+          {/* Active Engine Footer Note */}
           <div className="border-t border-slate-100 pt-4 text-[11px] leading-relaxed text-slate-500">
-            Note: Trained PyTorch weights (<code className="font-mono">models/model_combined.pth</code>)
-            are excluded from the repository, so live photo evaluation uses server-side Gemini
-            multimodal vision alongside client-side pixel/edge diagnostics.
+            {engine === 'pytorch' ? (
+              <span>
+                Running local PyTorch inference via{' '}
+                <code className="font-mono">models/{selectedModel}</code> (
+                <code className="font-mono">deepfake_detection.utils</code>). Switch above to
+                compare with Gemini Vision.
+              </span>
+            ) : (
+              <span>
+                Running server-side multimodal forensics via{' '}
+                <code className="font-mono">gemini-4-hydrogen</code>. Switch above to evaluate with
+                your local <code className="font-mono">.pth</code> checkpoints.
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -743,6 +925,11 @@ export function InspectorWorkspace({ fileInputRef }: InspectorWorkspaceProps) {
                       : item.verdict === 'authentic'
                         ? `Real · ${(item.realProbability * 100).toFixed(0)}%`
                         : 'Mixed'}
+                  </div>
+                  <div className="truncate text-[10px] font-mono text-slate-500">
+                    {item.result.engineMode === 'gemini'
+                      ? 'Gemini Vision'
+                      : item.result.modelName || 'PyTorch'}
                   </div>
                 </div>
               </button>
